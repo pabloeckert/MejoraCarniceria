@@ -1,0 +1,28 @@
+{
+  "name": "mejora-carniceria",
+  "version": "1.0.0",
+  "description": "Sistema de gestión para carnicerías - Funciona offline, sin navegador, sin complicaciones",
+  "main": "src/backend/server.js",
+  "scripts": {
+    "start": "node src/backend/server.js",
+    "dev": "node src/backend/server.js",
+    "electron": "electron .",
+    "build:windows-installer": "node scripts/build-windows.js",
+    "build:android-apk": "node scripts/build-android.js",
+    "build:all": "npm run build:windows-installer && npm run build:android-apk"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "compression": "^1.7.4",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^8.0.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "author": "MejoraCarniceria",
+  "license": "MIT"
+}

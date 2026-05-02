@@ -1,0 +1,13 @@
+node_modules/
+data/
+.electron-build/
+.twa-build/
+installer/windows/*.exe
+installer/windows/*.blockmap
+installer/windows/*.yml
+installer/android/*.apk
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db
