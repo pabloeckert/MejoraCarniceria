@@ -41,6 +41,9 @@
         <li><a href="#" data-page="productos" class="nav-link">📦 Productos</a></li>
         <li><a href="#" data-page="gastos" class="nav-link">💸 Gastos</a></li>
         <li><a href="#" data-page="clientes" class="nav-link">👥 Clientes</a></li>
+        <li class="nav-divider"></li>
+        <li><a href="#" data-page="reportes" class="nav-link">📈 Reportes</a></li>
+        <li><a href="#" data-page="cierre" class="nav-link">🏦 Cierre de Caja</a></li>
       </ul>
     </nav>
 
@@ -49,6 +52,7 @@
 
     <!-- Main Content -->
     <main id="content">
+
       <!-- Dashboard -->
       <section id="page-dashboard" class="page active">
         <h2>📊 Resumen del Día</h2>
@@ -64,14 +68,25 @@
             <div class="stat-sub" id="stat-semana-count">0 ventas</div>
           </div>
           <div class="stat-card orange">
-            <div class="stat-label">Stock Bajo</div>
-            <div class="stat-value" id="stat-stock-bajo">0</div>
-            <div class="stat-sub">productos</div>
+            <div class="stat-label">Gastos Hoy</div>
+            <div class="stat-value" id="stat-gastos-hoy">$0</div>
+            <div class="stat-sub" id="stat-gastos-count">0 gastos</div>
+          </div>
+          <div class="stat-card" id="stat-utilidad-card">
+            <div class="stat-label">Utilidad Hoy</div>
+            <div class="stat-value" id="stat-utilidad-hoy">$0</div>
+            <div class="stat-sub" id="stat-stock-bajo-count">0 productos bajos</div>
           </div>
         </div>
+
         <div class="card">
           <h3>🏆 Más Vendidos</h3>
           <div id="top-productos" class="list-container"></div>
+        </div>
+
+        <div class="card" id="card-alertas-stock" style="display:none">
+          <h3>⚠️ Stock Bajo</h3>
+          <div id="lista-alertas-stock" class="list-container"></div>
         </div>
       </section>
 
@@ -169,6 +184,134 @@
           <div id="lista-clientes" class="list-container"></div>
         </div>
       </section>
+
+      <!-- ═══ FASE 1: Reportes ════════════════════════════════════════════════ -->
+      <section id="page-reportes" class="page">
+        <h2>📈 Reportes</h2>
+
+        <!-- Selector de período -->
+        <div class="card period-card">
+          <div class="period-tabs">
+            <button class="period-tab active" data-period="hoy">Hoy</button>
+            <button class="period-tab" data-period="semana">7 días</button>
+            <button class="period-tab" data-period="mes">30 días</button>
+            <button class="period-tab" data-period="custom">Personalizado</button>
+          </div>
+          <div id="custom-period" class="form-row" style="display:none;margin-top:12px">
+            <input type="date" id="rep-desde">
+            <input type="date" id="rep-hasta">
+            <button id="btn-rep-filtrar" class="btn btn-secondary">Ver</button>
+          </div>
+        </div>
+
+        <!-- Balance -->
+        <div class="stats-grid">
+          <div class="stat-card green">
+            <div class="stat-label">Ventas</div>
+            <div class="stat-value" id="rep-ventas">$0</div>
+            <div class="stat-sub" id="rep-ventas-count">0 ventas</div>
+          </div>
+          <div class="stat-card orange">
+            <div class="stat-label">Gastos</div>
+            <div class="stat-value" id="rep-gastos">$0</div>
+            <div class="stat-sub" id="rep-gastos-count">0 gastos</div>
+          </div>
+          <div class="stat-card" id="rep-utilidad-card">
+            <div class="stat-label">Utilidad</div>
+            <div class="stat-value" id="rep-utilidad">$0</div>
+            <div class="stat-sub" id="rep-margen">0% margen</div>
+          </div>
+        </div>
+
+        <!-- Gráfica de ventas por día -->
+        <div class="card">
+          <h3>📊 Ventas por Día</h3>
+          <div class="chart-wrap">
+            <div class="chart-bars" id="chart-ventas-diarias"></div>
+          </div>
+        </div>
+
+        <!-- Análisis de productos -->
+        <div class="card">
+          <h3>🏆 Análisis de Productos</h3>
+          <div id="rep-productos" class="list-container"></div>
+        </div>
+
+        <!-- Exportar -->
+        <div class="card">
+          <h3>📥 Exportar Datos</h3>
+          <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:12px">
+            Descarga los datos del período seleccionado en formato CSV (compatible con Excel).
+          </p>
+          <div class="form-row">
+            <button class="btn btn-secondary" onclick="app.exportarVentas()">📊 Ventas CSV</button>
+            <button class="btn btn-secondary" onclick="app.exportarProductos()">📦 Inventario CSV</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ FASE 1: Cierre de Caja ═════════════════════════════════════════ -->
+      <section id="page-cierre" class="page">
+        <h2>🏦 Cierre de Caja</h2>
+
+        <!-- Resumen del día -->
+        <div class="stats-grid" id="cierre-stats">
+          <div class="stat-card green">
+            <div class="stat-label">Total Ventas</div>
+            <div class="stat-value" id="cierre-total-ventas">$0</div>
+            <div class="stat-sub" id="cierre-efectivo-ventas-sub">$0 en efectivo</div>
+          </div>
+          <div class="stat-card orange">
+            <div class="stat-label">Total Gastos</div>
+            <div class="stat-value" id="cierre-total-gastos">$0</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="stat-label">Efectivo Esperado</div>
+            <div class="stat-value" id="cierre-efectivo-esperado">$0</div>
+            <div class="stat-sub">ventas efectivo − gastos</div>
+          </div>
+        </div>
+
+        <!-- Formulario de cierre -->
+        <div class="card">
+          <h3>Registrar Cierre del Día</h3>
+          <div id="cierre-ya-registrado" class="alert alert-success" style="display:none">
+            ✅ Caja cerrada hoy. Puedes actualizar el cierre si es necesario.
+          </div>
+          <form id="form-cierre">
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <label class="field-label">Efectivo contado en caja ($):</label>
+              <input type="number" id="cierre-efectivo-input" placeholder="0.00" step="0.01" min="0" required>
+              <label class="field-label">Notas (opcional):</label>
+              <textarea id="cierre-notas-input" placeholder="Observaciones del cierre..." rows="2" style="resize:vertical"></textarea>
+              <button type="submit" class="btn btn-primary btn-block">🏦 Cerrar Caja</button>
+            </div>
+          </form>
+
+          <!-- Resultado del cierre -->
+          <div id="cierre-resultado" class="cierre-result" style="display:none">
+            <div class="diff-row">
+              <span>Efectivo esperado</span>
+              <span id="res-efectivo-esperado" class="diff-val"></span>
+            </div>
+            <div class="diff-row">
+              <span>Efectivo contado</span>
+              <span id="res-efectivo-contado" class="diff-val"></span>
+            </div>
+            <div class="diff-row diff-row-total">
+              <span>Diferencia</span>
+              <span id="res-diferencia" class="diff-val"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Historial de cierres -->
+        <div class="card">
+          <h3>📋 Últimos Cierres</h3>
+          <div id="lista-cierres" class="list-container"></div>
+        </div>
+      </section>
+
     </main>
   </div>
 

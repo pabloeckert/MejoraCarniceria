@@ -83,6 +83,19 @@ db.exec(`
     deuda REAL DEFAULT 0,
     creado TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS cierres_caja (
+    id TEXT PRIMARY KEY,
+    fecha TEXT NOT NULL,
+    total_ventas REAL DEFAULT 0,
+    total_gastos REAL DEFAULT 0,
+    efectivo_ventas REAL DEFAULT 0,
+    efectivo_esperado REAL DEFAULT 0,
+    efectivo_contado REAL,
+    diferencia REAL DEFAULT 0,
+    notas TEXT,
+    creado TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // Seed data if empty
@@ -105,7 +118,7 @@ if (count.c === 0) {
   insertMany(seedData);
 }
 
-// API Routes
+// ─── API Routes ────────────────────────────────────────────────────────────────
 
 // Productos
 app.get('/api/productos', (req, res) => {
@@ -184,15 +197,32 @@ app.post('/api/ventas/:id/anular', (req, res) => {
   res.json({ ok: true });
 });
 
-// Dashboard / resumen
+// Dashboard — incluye gastos, utilidad y productos en alerta
 app.get('/api/dashboard', (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const ventasHoy = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total FROM ventas WHERE date(fecha) = ? AND anulada = 0").get(hoy);
   const ventasSemana = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total FROM ventas WHERE fecha >= date('now', '-7 days') AND anulada = 0").get();
   const productosBajos = db.prepare("SELECT COUNT(*) as count FROM productos WHERE stock < 5 AND activo = 1").get();
-  const topProductos = db.prepare(`SELECT p.nombre, SUM(vi.cantidad) as total_vendido FROM venta_items vi JOIN productos p ON vi.producto_id = p.id JOIN ventas v ON vi.venta_id = v.id WHERE v.anulada = 0 GROUP BY p.id ORDER BY total_vendido DESC LIMIT 5`).all();
+  const topProductos = db.prepare(`
+    SELECT p.nombre, SUM(vi.cantidad) as total_vendido
+    FROM venta_items vi
+    JOIN productos p ON vi.producto_id = p.id
+    JOIN ventas v ON vi.venta_id = v.id
+    WHERE v.anulada = 0
+    GROUP BY p.id ORDER BY total_vendido DESC LIMIT 5
+  `).all();
+  const gastosHoy = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(monto),0) as total FROM gastos WHERE date(fecha) = ?").get(hoy);
+  const productosAlerta = db.prepare("SELECT nombre, stock, unidad FROM productos WHERE stock < 5 AND activo = 1 ORDER BY stock ASC LIMIT 8").all();
 
-  res.json({ ventasHoy, ventasSemana, productosBajos, topProductos });
+  res.json({
+    ventasHoy,
+    ventasSemana,
+    productosBajos,
+    topProductos,
+    gastosHoy,
+    utilidadHoy: ventasHoy.total - gastosHoy.total,
+    productosAlerta
+  });
 });
 
 // Gastos
@@ -217,6 +247,202 @@ app.post('/api/clientes', (req, res) => {
   const id = uuidv4();
   db.prepare('INSERT INTO clientes (id, nombre, telefono, direccion) VALUES (?,?,?,?)').run(id, nombre, telefono || null, direccion || null);
   res.status(201).json(db.prepare('SELECT * FROM clientes WHERE id = ?').get(id));
+});
+
+// ─── FASE 1: Reportes ─────────────────────────────────────────────────────────
+
+// Balance de ingresos vs gastos en un período
+app.get('/api/reportes/balance', (req, res) => {
+  const hoy = new Date().toISOString().split('T')[0];
+  const desde = req.query.desde || hoy;
+  const hasta = req.query.hasta || hoy;
+
+  const ventas = db.prepare(`
+    SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count
+    FROM ventas WHERE date(fecha) BETWEEN ? AND ? AND anulada = 0
+  `).get(desde, hasta);
+
+  const gastos = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) as total, COUNT(*) as count
+    FROM gastos WHERE date(fecha) BETWEEN ? AND ?
+  `).get(desde, hasta);
+
+  const utilidad = ventas.total - gastos.total;
+  const margen = ventas.total > 0 ? (utilidad / ventas.total * 100) : 0;
+
+  res.json({ ventas, gastos, utilidad, margen: parseFloat(margen.toFixed(1)) });
+});
+
+// Ventas agrupadas por día para gráfica de barras
+app.get('/api/reportes/ventas-diarias', (req, res) => {
+  const hoy = new Date().toISOString().split('T')[0];
+  const hace7 = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
+  const desde = req.query.desde || hace7;
+  const hasta = req.query.hasta || hoy;
+
+  const data = db.prepare(`
+    SELECT date(fecha) as dia,
+           COALESCE(SUM(total), 0) as total,
+           COUNT(*) as count
+    FROM ventas
+    WHERE date(fecha) BETWEEN ? AND ? AND anulada = 0
+    GROUP BY date(fecha)
+    ORDER BY dia
+  `).all(desde, hasta);
+
+  res.json(data);
+});
+
+// Análisis de productos: ventas, ingresos, costo y margen en un período
+app.get('/api/reportes/productos', (req, res) => {
+  const hoy = new Date().toISOString().split('T')[0];
+  const hace30 = new Date(Date.now() - 29 * 86400000).toISOString().split('T')[0];
+  const desde = req.query.desde || hace30;
+  const hasta = req.query.hasta || hoy;
+
+  const data = db.prepare(`
+    SELECT
+      p.nombre,
+      p.categoria,
+      p.precio_venta,
+      p.precio_compra,
+      p.stock,
+      p.unidad,
+      COALESCE(SUM(vi.cantidad), 0) as cantidad_vendida,
+      COALESCE(SUM(vi.subtotal), 0) as ingresos,
+      COALESCE(SUM(vi.cantidad * p.precio_compra), 0) as costo,
+      COALESCE(SUM(vi.subtotal) - SUM(vi.cantidad * p.precio_compra), 0) as utilidad
+    FROM productos p
+    LEFT JOIN venta_items vi ON p.id = vi.producto_id
+    LEFT JOIN ventas v ON vi.venta_id = v.id
+      AND v.anulada = 0
+      AND date(v.fecha) BETWEEN ? AND ?
+    WHERE p.activo = 1
+    GROUP BY p.id
+    ORDER BY ingresos DESC
+  `).all(desde, hasta);
+
+  res.json(data);
+});
+
+// ─── FASE 1: Cierre de Caja ───────────────────────────────────────────────────
+
+// Estado del cierre del día
+app.get('/api/cierre-caja', (req, res) => {
+  const hoy = new Date().toISOString().split('T')[0];
+
+  const ventas = db.prepare(`
+    SELECT
+      COALESCE(SUM(total), 0) as total,
+      COALESCE(SUM(CASE WHEN metodo_pago = 'efectivo' THEN total ELSE 0 END), 0) as efectivo
+    FROM ventas WHERE date(fecha) = ? AND anulada = 0
+  `).get(hoy);
+
+  const gastos = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) as total FROM gastos WHERE date(fecha) = ?
+  `).get(hoy);
+
+  const cierre = db.prepare('SELECT * FROM cierres_caja WHERE fecha = ?').get(hoy);
+
+  res.json({
+    fecha: hoy,
+    total_ventas: ventas.total,
+    efectivo_ventas: ventas.efectivo,
+    total_gastos: gastos.total,
+    utilidad: ventas.total - gastos.total,
+    efectivo_esperado: ventas.efectivo - gastos.total,
+    cierre_registrado: !!cierre,
+    cierre: cierre || null
+  });
+});
+
+// Registrar o actualizar cierre del día
+app.post('/api/cierre-caja', (req, res) => {
+  const { efectivo_contado, notas } = req.body;
+  if (efectivo_contado === undefined || efectivo_contado === null) {
+    return res.status(400).json({ error: 'efectivo_contado es requerido' });
+  }
+
+  const hoy = new Date().toISOString().split('T')[0];
+
+  const ventas = db.prepare(`
+    SELECT
+      COALESCE(SUM(total), 0) as total,
+      COALESCE(SUM(CASE WHEN metodo_pago = 'efectivo' THEN total ELSE 0 END), 0) as efectivo
+    FROM ventas WHERE date(fecha) = ? AND anulada = 0
+  `).get(hoy);
+
+  const gastos = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) as total FROM gastos WHERE date(fecha) = ?
+  `).get(hoy);
+
+  const efectivoEsperado = ventas.efectivo - gastos.total;
+  const diferencia = parseFloat(efectivo_contado) - efectivoEsperado;
+
+  const existing = db.prepare('SELECT id FROM cierres_caja WHERE fecha = ?').get(hoy);
+  if (existing) {
+    db.prepare(`
+      UPDATE cierres_caja SET
+        total_ventas=?, total_gastos=?, efectivo_ventas=?,
+        efectivo_esperado=?, efectivo_contado=?, diferencia=?, notas=?
+      WHERE fecha=?
+    `).run(ventas.total, gastos.total, ventas.efectivo, efectivoEsperado, parseFloat(efectivo_contado), diferencia, notas || null, hoy);
+  } else {
+    db.prepare(`
+      INSERT INTO cierres_caja (id, fecha, total_ventas, total_gastos, efectivo_ventas, efectivo_esperado, efectivo_contado, diferencia, notas)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(uuidv4(), hoy, ventas.total, gastos.total, ventas.efectivo, efectivoEsperado, parseFloat(efectivo_contado), diferencia, notas || null);
+  }
+
+  res.json({ ok: true, efectivo_esperado: efectivoEsperado, diferencia });
+});
+
+// Historial de cierres
+app.get('/api/cierres-caja', (req, res) => {
+  res.json(db.prepare('SELECT * FROM cierres_caja ORDER BY fecha DESC LIMIT 30').all());
+});
+
+// ─── FASE 1: Exportación CSV ──────────────────────────────────────────────────
+
+// CSV de ventas
+app.get('/api/exportar/ventas', (req, res) => {
+  const hoy = new Date().toISOString().split('T')[0];
+  const hace30 = new Date(Date.now() - 29 * 86400000).toISOString().split('T')[0];
+  const desde = req.query.desde || hace30;
+  const hasta = req.query.hasta || hoy;
+
+  const ventas = db.prepare(`
+    SELECT v.fecha, v.total, v.metodo_pago, COALESCE(v.cliente,'') as cliente, COALESCE(v.notas,'') as notas
+    FROM ventas v
+    WHERE date(v.fecha) BETWEEN ? AND ? AND v.anulada = 0
+    ORDER BY v.fecha DESC
+  `).all(desde, hasta);
+
+  const header = 'Fecha,Total,Metodo Pago,Cliente,Notas\n';
+  const rows = ventas.map(v =>
+    `"${v.fecha}","${v.total}","${v.metodo_pago}","${v.cliente}","${v.notas}"`
+  ).join('\n');
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="ventas-${desde}-al-${hasta}.csv"`);
+  res.send('﻿' + header + rows);
+});
+
+// CSV de inventario
+app.get('/api/exportar/productos', (req, res) => {
+  const productos = db.prepare(`
+    SELECT nombre, categoria, precio_venta, precio_compra, stock, unidad, COALESCE(codigo_barras,'') as codigo_barras
+    FROM productos WHERE activo = 1 ORDER BY nombre
+  `).all();
+
+  const header = 'Nombre,Categoria,Precio Venta,Precio Compra,Stock,Unidad,Codigo Barras\n';
+  const rows = productos.map(p =>
+    `"${p.nombre}","${p.categoria}","${p.precio_venta}","${p.precio_compra}","${p.stock}","${p.unidad}","${p.codigo_barras}"`
+  ).join('\n');
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="inventario.csv"');
+  res.send('﻿' + header + rows);
 });
 
 // SPA fallback
