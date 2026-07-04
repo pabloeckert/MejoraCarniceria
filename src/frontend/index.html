@@ -32,7 +32,7 @@
     <nav id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <h2>Menú</h2>
-        <button id="close-sidebar" class="icon-btn">✕</button>
+        <button id="close-sidebar" class="icon-btn" aria-label="Cerrar menú">✕</button>
       </div>
       <ul class="nav-list">
         <li><a href="#" data-page="dashboard" class="nav-link active">📊 Dashboard</a></li>
@@ -41,6 +41,7 @@
         <li><a href="#" data-page="productos" class="nav-link">📦 Productos</a></li>
         <li><a href="#" data-page="gastos" class="nav-link">💸 Gastos</a></li>
         <li><a href="#" data-page="clientes" class="nav-link">👥 Clientes</a></li>
+        <li><button id="btn-install" class="nav-link" style="display:none;width:100%;text-align:left;border:none;cursor:pointer;background:none;font:inherit">⬇️ Instalar app</button></li>
       </ul>
     </nav>
 
@@ -173,18 +174,18 @@
   </div>
 
   <!-- Modal -->
-  <div id="modal" class="modal" style="display:none">
+  <div id="modal" class="modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-content">
       <div class="modal-header">
         <h3 id="modal-title"></h3>
-        <button class="icon-btn modal-close">✕</button>
+        <button class="icon-btn modal-close" aria-label="Cerrar">✕</button>
       </div>
       <div id="modal-body"></div>
     </div>
   </div>
 
   <!-- Toast -->
-  <div id="toast" class="toast"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="/js/app.js"></script>
 </body>

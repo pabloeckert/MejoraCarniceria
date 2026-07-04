@@ -3,6 +3,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const compression = require('compression');
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
@@ -20,6 +21,30 @@ app.use(express.static(path.join(__dirname, '../frontend'), {
     }
   }
 }));
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes, intentá de nuevo en un momento' }
+});
+app.use('/api/', apiLimiter);
+
+// Wraps a synchronous route handler so thrown errors return JSON instead of Express's HTML/stack-trace page
+function handler(fn) {
+  return (req, res) => {
+    try {
+      fn(req, res);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Error interno del servidor' });
+    }
+  };
+}
+
+function isPositiveNumber(n) { return typeof n === 'number' && Number.isFinite(n) && n >= 0; }
+function isNonEmptyString(s) { return typeof s === 'string' && s.trim().length > 0; }
 
 // Database setup
 const dbPath = path.join(process.cwd(), 'data', 'carniceria.db');
@@ -108,7 +133,7 @@ if (count.c === 0) {
 // API Routes
 
 // Productos
-app.get('/api/productos', (req, res) => {
+app.get('/api/productos', handler((req, res) => {
   const { search, categoria } = req.query;
   let query = 'SELECT * FROM productos WHERE activo = 1';
   const params = [];
@@ -116,35 +141,49 @@ app.get('/api/productos', (req, res) => {
   if (categoria) { query += ' AND categoria = ?'; params.push(categoria); }
   query += ' ORDER BY nombre';
   res.json(db.prepare(query).all(...params));
-});
+}));
 
-app.get('/api/productos/:id', (req, res) => {
+app.get('/api/productos/:id', handler((req, res) => {
   const prod = db.prepare('SELECT * FROM productos WHERE id = ?').get(req.params.id);
   prod ? res.json(prod) : res.status(404).json({ error: 'Producto no encontrado' });
-});
+}));
 
-app.post('/api/productos', (req, res) => {
-  const { nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras } = req.body;
+app.post('/api/productos', handler((req, res) => {
+  const { nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras } = req.body || {};
+  if (!isNonEmptyString(nombre)) return res.status(400).json({ error: 'El nombre es requerido' });
+  if (!isPositiveNumber(precio_venta)) return res.status(400).json({ error: 'El precio de venta es requerido y debe ser un número válido' });
+  if (precio_compra !== undefined && !isPositiveNumber(precio_compra)) return res.status(400).json({ error: 'El precio de compra debe ser un número válido' });
+  if (stock !== undefined && !isPositiveNumber(stock)) return res.status(400).json({ error: 'El stock debe ser un número válido' });
   const id = uuidv4();
   db.prepare(`INSERT INTO productos (id, nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras) VALUES (?,?,?,?,?,?,?,?)`)
     .run(id, nombre, categoria || 'general', precio_venta, precio_compra || 0, stock || 0, unidad || 'kg', codigo_barras || null);
   res.status(201).json(db.prepare('SELECT * FROM productos WHERE id = ?').get(id));
-});
+}));
 
-app.put('/api/productos/:id', (req, res) => {
-  const { nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras, activo } = req.body;
+app.put('/api/productos/:id', handler((req, res) => {
+  const existing = db.prepare('SELECT id FROM productos WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Producto no encontrado' });
+  const { nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras, activo } = req.body || {};
+  if (!isNonEmptyString(nombre)) return res.status(400).json({ error: 'El nombre es requerido' });
+  if (!isPositiveNumber(precio_venta)) return res.status(400).json({ error: 'El precio de venta es requerido y debe ser un número válido' });
+  if (precio_compra !== undefined && !isPositiveNumber(precio_compra)) return res.status(400).json({ error: 'El precio de compra debe ser un número válido' });
+  if (stock !== undefined && !isPositiveNumber(stock)) return res.status(400).json({ error: 'El stock debe ser un número válido' });
   db.prepare(`UPDATE productos SET nombre=?, categoria=?, precio_venta=?, precio_compra=?, stock=?, unidad=?, codigo_barras=?, activo=?, actualizado=datetime('now') WHERE id=?`)
-    .run(nombre, categoria, precio_venta, precio_compra, stock, unidad, codigo_barras, activo !== undefined ? activo : 1, req.params.id);
+    .run(nombre, categoria || 'general', precio_venta, precio_compra || 0, stock || 0, unidad || 'kg', codigo_barras || null, activo !== undefined ? activo : 1, req.params.id);
   res.json(db.prepare('SELECT * FROM productos WHERE id = ?').get(req.params.id));
-});
+}));
 
-app.delete('/api/productos/:id', (req, res) => {
+app.delete('/api/productos/:id', handler((req, res) => {
+  const prod = db.prepare('SELECT id FROM productos WHERE id = ? AND activo = 1').get(req.params.id);
+  if (!prod) return res.status(404).json({ error: 'Producto no encontrado' });
   db.prepare("UPDATE productos SET activo = 0, actualizado = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
-});
+}));
 
 // Ventas
-app.get('/api/ventas', (req, res) => {
+const METODOS_PAGO = ['efectivo', 'tarjeta', 'transferencia'];
+
+app.get('/api/ventas', handler((req, res) => {
   const { desde, hasta, limit } = req.query;
   let query = 'SELECT * FROM ventas WHERE anulada = 0';
   const params = [];
@@ -153,11 +192,22 @@ app.get('/api/ventas', (req, res) => {
   query += ' ORDER BY fecha DESC';
   if (limit) { query += ' LIMIT ?'; params.push(parseInt(limit)); }
   res.json(db.prepare(query).all(...params));
-});
+}));
 
-app.post('/api/ventas', (req, res) => {
-  const { items, metodo_pago, cliente, notas } = req.body;
-  if (!items || items.length === 0) return res.status(400).json({ error: 'Sin items' });
+app.post('/api/ventas', handler((req, res) => {
+  const { items, metodo_pago, cliente, notas } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'La venta no tiene items' });
+  for (const item of items) {
+    if (!isNonEmptyString(item.producto_id)) return res.status(400).json({ error: 'Item de venta inválido' });
+    if (typeof item.cantidad !== 'number' || !Number.isFinite(item.cantidad) || item.cantidad <= 0) return res.status(400).json({ error: 'Cantidad inválida en un item de venta' });
+    if (!isPositiveNumber(item.precio_unitario)) return res.status(400).json({ error: 'Precio inválido en un item de venta' });
+  }
+  if (metodo_pago !== undefined && !METODOS_PAGO.includes(metodo_pago)) return res.status(400).json({ error: 'Método de pago inválido' });
+
+  const ids = [...new Set(items.map((i) => i.producto_id))];
+  const placeholders = ids.map(() => '?').join(',');
+  const found = db.prepare(`SELECT id FROM productos WHERE id IN (${placeholders})`).all(...ids);
+  if (found.length !== ids.length) return res.status(400).json({ error: 'Uno o más productos no existen' });
 
   const ventaId = uuidv4();
   const total = items.reduce((sum, item) => sum + (item.cantidad * item.precio_unitario), 0);
@@ -177,15 +227,26 @@ app.post('/api/ventas', (req, res) => {
 
   crearVenta();
   res.status(201).json({ id: ventaId, total, fecha: new Date().toISOString() });
-});
+}));
 
-app.post('/api/ventas/:id/anular', (req, res) => {
-  db.prepare('UPDATE ventas SET anulada = 1 WHERE id = ?').run(req.params.id);
+app.post('/api/ventas/:id/anular', handler((req, res) => {
+  const venta = db.prepare('SELECT * FROM ventas WHERE id = ?').get(req.params.id);
+  if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
+  if (venta.anulada) return res.status(404).json({ error: 'La venta ya está anulada' });
+
+  const anular = db.transaction(() => {
+    const items = db.prepare('SELECT producto_id, cantidad FROM venta_items WHERE venta_id = ?').all(venta.id);
+    const restoreStock = db.prepare('UPDATE productos SET stock = stock + ? WHERE id = ?');
+    for (const item of items) restoreStock.run(item.cantidad, item.producto_id);
+    db.prepare('UPDATE ventas SET anulada = 1 WHERE id = ?').run(venta.id);
+  });
+
+  anular();
   res.json({ ok: true });
-});
+}));
 
 // Dashboard / resumen
-app.get('/api/dashboard', (req, res) => {
+app.get('/api/dashboard', handler((req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const ventasHoy = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total FROM ventas WHERE date(fecha) = ? AND anulada = 0").get(hoy);
   const ventasSemana = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total FROM ventas WHERE fecha >= date('now', '-7 days') AND anulada = 0").get();
@@ -193,31 +254,34 @@ app.get('/api/dashboard', (req, res) => {
   const topProductos = db.prepare(`SELECT p.nombre, SUM(vi.cantidad) as total_vendido FROM venta_items vi JOIN productos p ON vi.producto_id = p.id JOIN ventas v ON vi.venta_id = v.id WHERE v.anulada = 0 GROUP BY p.id ORDER BY total_vendido DESC LIMIT 5`).all();
 
   res.json({ ventasHoy, ventasSemana, productosBajos, topProductos });
-});
+}));
 
 // Gastos
-app.get('/api/gastos', (req, res) => {
+app.get('/api/gastos', handler((req, res) => {
   res.json(db.prepare('SELECT * FROM gastos ORDER BY fecha DESC LIMIT 100').all());
-});
+}));
 
-app.post('/api/gastos', (req, res) => {
-  const { descripcion, monto, categoria } = req.body;
+app.post('/api/gastos', handler((req, res) => {
+  const { descripcion, monto, categoria } = req.body || {};
+  if (!isNonEmptyString(descripcion)) return res.status(400).json({ error: 'La descripción es requerida' });
+  if (typeof monto !== 'number' || !Number.isFinite(monto) || monto <= 0) return res.status(400).json({ error: 'El monto debe ser un número mayor a 0' });
   const id = uuidv4();
   db.prepare('INSERT INTO gastos (id, descripcion, monto, categoria) VALUES (?,?,?,?)').run(id, descripcion, monto, categoria || 'general');
   res.status(201).json(db.prepare('SELECT * FROM gastos WHERE id = ?').get(id));
-});
+}));
 
 // Clientes
-app.get('/api/clientes', (req, res) => {
+app.get('/api/clientes', handler((req, res) => {
   res.json(db.prepare('SELECT * FROM clientes ORDER BY nombre').all());
-});
+}));
 
-app.post('/api/clientes', (req, res) => {
-  const { nombre, telefono, direccion } = req.body;
+app.post('/api/clientes', handler((req, res) => {
+  const { nombre, telefono, direccion } = req.body || {};
+  if (!isNonEmptyString(nombre)) return res.status(400).json({ error: 'El nombre es requerido' });
   const id = uuidv4();
   db.prepare('INSERT INTO clientes (id, nombre, telefono, direccion) VALUES (?,?,?,?)').run(id, nombre, telefono || null, direccion || null);
   res.status(201).json(db.prepare('SELECT * FROM clientes WHERE id = ?').get(id));
-});
+}));
 
 // SPA fallback
 app.get('*', (req, res) => {

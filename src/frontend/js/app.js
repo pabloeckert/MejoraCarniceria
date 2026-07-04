@@ -9,15 +9,44 @@
   // Helpers
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
+
+  class ApiError extends Error {
+    constructor(message, { network = false, status = null } = {}) {
+      super(message);
+      this.name = 'ApiError';
+      this.network = network;
+      this.status = status;
+    }
+  }
+
   const api = async (path, opts) => {
-    const res = await fetch(`/api${path}`, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-      body: opts?.body ? JSON.stringify(opts.body) : undefined
-    });
-    if (!res.ok) throw new Error(await res.text());
+    let res;
+    try {
+      res = await fetch(`/api${path}`, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+        body: opts?.body ? JSON.stringify(opts.body) : undefined
+      });
+    } catch (networkErr) {
+      throw new ApiError('Sin conexión', { network: true });
+    }
+    if (!res.ok) {
+      let message = res.statusText;
+      try { const data = await res.json(); if (data?.error) message = data.error; } catch (_) {}
+      throw new ApiError(message, { status: res.status });
+    }
     return res.json();
   };
+
+  function apiErrorToast(e, fallback = 'Error') {
+    console.error(e);
+    if (e instanceof ApiError && e.network) toast('Sin conexión: no se pudo guardar, probá de nuevo con señal', 'error');
+    else toast((e instanceof ApiError && e.message) || fallback, 'error');
+  }
+
+  function escapeHtml(str) {
+    return String(str ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
 
   function formatMoney(n) { return `$${Number(n || 0).toFixed(2)}`; }
   function formatDate(s) {
@@ -31,11 +60,19 @@
     return d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
   }
 
-  function toast(msg, type = '') {
+  let toastTimer = null;
+  let toastClickHandler = null;
+  function toast(msg, type = '', duration = 3000, onClick = null) {
     const el = $('#toast');
     el.textContent = msg;
     el.className = `toast show ${type}`;
-    setTimeout(() => el.className = 'toast', 3000);
+    clearTimeout(toastTimer);
+    if (toastClickHandler) { el.removeEventListener('click', toastClickHandler); toastClickHandler = null; }
+    if (onClick) {
+      toastClickHandler = onClick;
+      el.addEventListener('click', toastClickHandler, { once: true });
+    }
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, duration);
   }
 
   // Navigation
@@ -81,13 +118,13 @@
         topEl.innerHTML = data.topProductos.map((p, i) => `
           <div class="list-item">
             <div class="list-item-info">
-              <div class="title">${i + 1}. ${p.nombre}</div>
+              <div class="title">${i + 1}. ${escapeHtml(p.nombre)}</div>
               <div class="subtitle">${p.total_vendido} vendidos</div>
             </div>
           </div>
         `).join('');
       }
-    } catch (e) { console.error('Dashboard error:', e); }
+    } catch (e) { apiErrorToast(e, 'Error al cargar el dashboard'); }
   }
 
   // Ventas - Productos
@@ -95,7 +132,7 @@
     try {
       productos = await api('/productos');
       renderProductosVenta();
-    } catch (e) { console.error(e); }
+    } catch (e) { apiErrorToast(e, 'Error al cargar productos'); }
   }
 
   function renderProductosVenta(filter = '') {
@@ -111,9 +148,9 @@
 
     grid.innerHTML = filtered.map(p => `
       <div class="product-card" data-id="${p.id}" onclick="app.addToCart('${p.id}')">
-        <div class="name">${p.nombre}</div>
-        <div class="price">${formatMoney(p.precio_venta)}/${p.unidad}</div>
-        <div class="stock">Stock: ${p.stock} ${p.unidad}</div>
+        <div class="name">${escapeHtml(p.nombre)}</div>
+        <div class="price">${formatMoney(p.precio_venta)}/${escapeHtml(p.unidad)}</div>
+        <div class="stock">Stock: ${p.stock} ${escapeHtml(p.unidad)}</div>
       </div>
     `).join('');
   }
@@ -123,13 +160,16 @@
     const prod = productos.find(p => p.id === id);
     if (!prod) return;
     const existing = carrito.find(c => c.producto_id === id);
+    const currentQty = existing ? existing.cantidad : 0;
+    if (currentQty >= prod.stock) { toast('Stock insuficiente', 'error'); return; }
+    const nextQty = Math.min(currentQty + 0.5, prod.stock);
     if (existing) {
-      existing.cantidad += 0.5;
+      existing.cantidad = nextQty;
     } else {
       carrito.push({
         producto_id: id,
         nombre: prod.nombre,
-        cantidad: 1,
+        cantidad: nextQty,
         precio_unitario: prod.precio_venta,
         unidad: prod.unidad,
         stock: prod.stock
@@ -153,13 +193,13 @@
     items.innerHTML = carrito.map((item, i) => `
       <div class="carrito-item">
         <div class="info">
-          <div class="name">${item.nombre}</div>
-          <div class="detail">${formatMoney(item.precio_unitario)} × ${item.cantidad} ${item.unidad}</div>
+          <div class="name">${escapeHtml(item.nombre)}</div>
+          <div class="detail">${formatMoney(item.precio_unitario)} × ${item.cantidad} ${escapeHtml(item.unidad)}</div>
         </div>
         <input type="number" value="${item.cantidad}" min="0.1" step="0.1"
           onchange="app.updateQty(${i}, this.value)">
         <span style="font-weight:600;min-width:70px;text-align:right">${formatMoney(item.cantidad * item.precio_unitario)}</span>
-        <button class="icon-btn" onclick="app.removeFromCart(${i})" style="color:var(--danger)">✕</button>
+        <button class="icon-btn" onclick="app.removeFromCart(${i})" style="color:var(--danger)" aria-label="Quitar del carrito">✕</button>
       </div>
     `).join('');
 
@@ -169,8 +209,11 @@
 
   function updateQty(index, val) {
     const qty = parseFloat(val);
-    if (qty <= 0) { carrito.splice(index, 1); }
-    else { carrito[index].cantidad = qty; }
+    const item = carrito[index];
+    if (!item) return;
+    if (isNaN(qty) || qty <= 0) { carrito.splice(index, 1); renderCarrito(); return; }
+    if (qty > item.stock) { toast('Stock insuficiente', 'error'); item.cantidad = item.stock; }
+    else { item.cantidad = qty; }
     renderCarrito();
   }
 
@@ -200,12 +243,13 @@
       toast('✅ Venta registrada', 'success');
       loadProductosVenta();
     } catch (e) {
-      toast('Error al cobrar', 'error');
-      console.error(e);
+      apiErrorToast(e, 'Error al cobrar');
     }
   }
 
   // Historial
+  const METODOS_PAGO = ['efectivo', 'tarjeta', 'transferencia'];
+
   async function loadHistorial() {
     try {
       const desde = $('#filtro-desde').value;
@@ -219,16 +263,20 @@
         el.innerHTML = '<div class="empty-state"><div class="icon">📋</div><p>Sin ventas registradas</p></div>';
         return;
       }
-      el.innerHTML = ventas.map(v => `
+      el.innerHTML = ventas.map(v => {
+        const metodoClass = METODOS_PAGO.includes(v.metodo_pago) ? v.metodo_pago : 'efectivo';
+        return `
         <div class="list-item">
           <div class="list-item-info">
             <div class="title">${formatMoney(v.total)}</div>
-            <div class="subtitle">${formatDate(v.fecha)} ${formatTime(v.fecha)} · ${v.cliente || 'Sin cliente'}</div>
+            <div class="subtitle">${formatDate(v.fecha)} ${formatTime(v.fecha)} · ${escapeHtml(v.cliente || 'Sin cliente')}</div>
           </div>
-          <span class="badge badge-${v.metodo_pago}">${v.metodo_pago}</span>
+          <span class="badge badge-${metodoClass}">${escapeHtml(v.metodo_pago)}</span>
+          <button class="btn btn-sm btn-secondary" onclick="app.anularVenta('${v.id}')" aria-label="Anular venta">Anular</button>
         </div>
-      `).join('');
-    } catch (e) { console.error(e); }
+      `;
+      }).join('');
+    } catch (e) { apiErrorToast(e, 'Error al cargar el historial'); }
   }
 
   // Productos CRUD
@@ -248,16 +296,16 @@
       el.innerHTML = productos.map(p => `
         <div class="list-item">
           <div class="list-item-info">
-            <div class="title">${p.nombre}</div>
-            <div class="subtitle">Venta: ${formatMoney(p.precio_venta)} · Compra: ${formatMoney(p.precio_compra)} · Stock: ${p.stock} ${p.unidad}</div>
+            <div class="title">${escapeHtml(p.nombre)}</div>
+            <div class="subtitle">Venta: ${formatMoney(p.precio_venta)} · Compra: ${formatMoney(p.precio_compra)} · Stock: ${p.stock} ${escapeHtml(p.unidad)}</div>
           </div>
           <div class="list-item-actions">
-            <button class="btn btn-sm btn-secondary" onclick="app.editProducto('${p.id}')">✏️</button>
-            <button class="btn btn-sm btn-danger" onclick="app.deleteProducto('${p.id}')">🗑️</button>
+            <button class="btn btn-sm btn-secondary" onclick="app.editProducto('${p.id}')" aria-label="Editar producto">✏️</button>
+            <button class="btn btn-sm btn-danger" onclick="app.deleteProducto('${p.id}')" aria-label="Eliminar producto">🗑️</button>
           </div>
         </div>
       `).join('');
-    } catch (e) { console.error(e); }
+    } catch (e) { apiErrorToast(e, 'Error al cargar productos'); }
   }
 
   function showProductoForm(prod = null) {
@@ -266,30 +314,30 @@
     $('#modal-body').innerHTML = `
       <form id="form-producto">
         <div class="form-row" style="flex-direction:column">
-          <input type="text" id="prod-nombre" placeholder="Nombre" value="${prod?.nombre || ''}" required>
+          <input type="text" id="prod-nombre" placeholder="Nombre" value="${escapeHtml(prod?.nombre || '')}" required>
           <select id="prod-categoria">
             ${['res','cerdo','pollo','embutidos','general'].map(c =>
               `<option value="${c}" ${prod?.categoria === c ? 'selected' : ''}>${c.charAt(0).toUpperCase() + c.slice(1)}</option>`
             ).join('')}
           </select>
           <div class="form-row">
-            <input type="number" id="prod-precio-v" placeholder="Precio venta" step="0.01" value="${prod?.precio_venta || ''}" required>
-            <input type="number" id="prod-precio-c" placeholder="Precio compra" step="0.01" value="${prod?.precio_compra || ''}">
+            <input type="number" id="prod-precio-v" placeholder="Precio venta" step="0.01" min="0" value="${prod?.precio_venta || ''}" required>
+            <input type="number" id="prod-precio-c" placeholder="Precio compra" step="0.01" min="0" value="${prod?.precio_compra || ''}">
           </div>
           <div class="form-row">
-            <input type="number" id="prod-stock" placeholder="Stock" step="0.1" value="${prod?.stock || 0}">
+            <input type="number" id="prod-stock" placeholder="Stock" step="0.1" min="0" value="${prod?.stock || 0}">
             <select id="prod-unidad">
               <option value="kg" ${prod?.unidad === 'kg' ? 'selected' : ''}>Kg</option>
               <option value="pieza" ${prod?.unidad === 'pieza' ? 'selected' : ''}>Pieza</option>
               <option value="lb" ${prod?.unidad === 'lb' ? 'selected' : ''}>Libra</option>
             </select>
           </div>
-          <input type="text" id="prod-codigo" placeholder="Código de barras (opcional)" value="${prod?.codigo_barras || ''}">
+          <input type="text" id="prod-codigo" placeholder="Código de barras (opcional)" value="${escapeHtml(prod?.codigo_barras || '')}">
         </div>
         <button type="submit" class="btn btn-primary btn-block">${isEdit ? 'Guardar' : 'Crear'}</button>
       </form>
     `;
-    $('#modal').style.display = 'flex';
+    openModal();
 
     $('#form-producto').onsubmit = async (e) => {
       e.preventDefault();
@@ -312,7 +360,7 @@
         }
         closeModal();
         loadProductos();
-      } catch (e) { toast('Error', 'error'); }
+      } catch (e) { apiErrorToast(e); }
     };
   }
 
@@ -320,16 +368,34 @@
     try {
       const prod = await api(`/productos/${id}`);
       showProductoForm(prod);
-    } catch (e) { toast('Error', 'error'); }
+    } catch (e) { apiErrorToast(e); }
   }
 
-  async function deleteProducto(id) {
-    if (!confirm('¿Eliminar este producto?')) return;
-    try {
-      await api(`/productos/${id}`, { method: 'DELETE' });
-      toast('Producto eliminado', 'success');
-      loadProductos();
-    } catch (e) { toast('Error', 'error'); }
+  function deleteProducto(id) {
+    const prod = productos.find(p => p.id === id);
+    showConfirm(`¿Eliminar "${prod ? prod.nombre : 'este producto'}"?`, async () => {
+      try {
+        await api(`/productos/${id}`, { method: 'DELETE' });
+        toast('Producto eliminado', 'success');
+        loadProductos();
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) { toast('El producto ya no existe', 'error'); loadProductos(); }
+        else apiErrorToast(e);
+      }
+    }, { title: 'Eliminar producto', confirmLabel: 'Eliminar' });
+  }
+
+  function anularVenta(id) {
+    showConfirm('¿Anular esta venta? Se restaurará el stock de los productos.', async () => {
+      try {
+        await api(`/ventas/${id}/anular`, { method: 'POST' });
+        toast('Venta anulada', 'success');
+        loadHistorial();
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) { toast('La venta no existe o ya fue anulada', 'error'); loadHistorial(); }
+        else apiErrorToast(e);
+      }
+    }, { title: 'Anular venta', confirmLabel: 'Anular' });
   }
 
   // Gastos
@@ -344,13 +410,13 @@
       el.innerHTML = gastos.map(g => `
         <div class="list-item">
           <div class="list-item-info">
-            <div class="title">${g.descripcion}</div>
-            <div class="subtitle">${formatDate(g.fecha)} · ${g.categoria}</div>
+            <div class="title">${escapeHtml(g.descripcion)}</div>
+            <div class="subtitle">${formatDate(g.fecha)} · ${escapeHtml(g.categoria)}</div>
           </div>
           <span style="font-weight:700;color:var(--danger)">${formatMoney(g.monto)}</span>
         </div>
       `).join('');
-    } catch (e) { console.error(e); }
+    } catch (e) { apiErrorToast(e, 'Error al cargar gastos'); }
   }
 
   // Clientes
@@ -365,15 +431,38 @@
       el.innerHTML = clientes.map(c => `
         <div class="list-item">
           <div class="list-item-info">
-            <div class="title">${c.nombre}</div>
-            <div class="subtitle">${c.telefono || 'Sin teléfono'} · ${c.direccion || 'Sin dirección'}</div>
+            <div class="title">${escapeHtml(c.nombre)}</div>
+            <div class="subtitle">${escapeHtml(c.telefono || 'Sin teléfono')} · ${escapeHtml(c.direccion || 'Sin dirección')}</div>
           </div>
         </div>
       `).join('');
-    } catch (e) { console.error(e); }
+    } catch (e) { apiErrorToast(e, 'Error al cargar clientes'); }
   }
 
-  function closeModal() { $('#modal').style.display = 'none'; }
+  // Modal
+  let lastFocusedEl = null;
+  function openModal() {
+    lastFocusedEl = document.activeElement;
+    $('#modal').style.display = 'flex';
+    const focusable = $('#modal-body').querySelector('input, select, textarea, button');
+    (focusable || $('.modal-close')).focus();
+  }
+  function closeModal() {
+    $('#modal').style.display = 'none';
+    lastFocusedEl?.focus();
+  }
+  function showConfirm(message, onConfirm, { title = 'Confirmar', confirmLabel = 'Confirmar', danger = true } = {}) {
+    $('#modal-title').textContent = title;
+    $('#modal-body').innerHTML = `
+      <p style="margin-bottom:16px">${escapeHtml(message)}</p>
+      <div class="form-row">
+        <button type="button" class="btn btn-secondary btn-block" id="confirm-cancel">Cancelar</button>
+        <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'} btn-block" id="confirm-ok">${escapeHtml(confirmLabel)}</button>
+      </div>`;
+    openModal();
+    $('#confirm-cancel').onclick = closeModal;
+    $('#confirm-ok').onclick = async () => { closeModal(); await onConfirm(); };
+  }
 
   // Connection status
   function updateConnectionStatus() {
